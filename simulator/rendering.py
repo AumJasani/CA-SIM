@@ -51,3 +51,7 @@ class Renderer:
             line_end.astype(int),
             2
         )
+
+        # Flip the screen vertically
+        fliped = pygame.transform.flip(self.screen, False, True)
+        self.screen.blit(fliped, (0, 0))

@@ -9,14 +9,19 @@ from .sensors import Lidar2D
 
 class Simulator:
     def __init__(self, map_name="default", start_position=None, goal_position=None, 
-                 max_velocity=DEFAULT_MAX_VELOCITY, mass=DEFAULT_MASS, size=DEFAULT_SIZE,
-                 use_lidar=False, lidar_resolution=1.0, lidar_range_max=5.0):
+                 max_velocity=DEFAULT_MAX_VELOCITY, max_acceleration=DEFAULT_MAX_ACCELERATION, mass=DEFAULT_MASS, size=0.3,
+                 use_lidar=False, lidar_resolution=1.0, lidar_range_max=5.0,
+                 plot_velocities_graph=False, plot_energies_graph=False, plot_lidar_map_graph=False):
         pygame.init()
         
         # Initialize components
-        self.physics = PhysicsEngine(mass, DEFAULT_FRICTION_COEFF, DEFAULT_RESTITUTION, size)
-        self.map_manager = MapManager(DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        self.renderer = Renderer(DEFAULT_WIDTH, DEFAULT_HEIGHT, 
+        self.map_manager = MapManager()
+        map_data = self.map_manager.load_map(map_name)
+        self.window_width = map_data["width"]
+        self.window_height = map_data["height"]
+        self.METER_TO_PIXEL = int(map_data["conv"])
+        self.physics = PhysicsEngine(mass, DEFAULT_FRICTION_COEFF, DEFAULT_RESTITUTION, size, max_acceleration, self.METER_TO_PIXEL)
+        self.renderer = Renderer(self.window_width, self.window_height, 
                                {"BLACK": BLACK, "RED": RED, "GREEN": GREEN, 
                                 "BLUE": BLUE, "WHITE": WHITE})
         
@@ -35,18 +40,20 @@ class Simulator:
                 range_max=lidar_range_max,  # 5 meters
                 angle_range=2*np.pi,  # 360 degrees
                 resolution=lidar_resolution,  # 1 degree resolution
+                meter_to_pixel=self.METER_TO_PIXEL
             )
         
         # Robot specifications
         self.max_velocity = max_velocity
-        self.circle_radius = int(size * METER_TO_PIXEL)
+        self.circle_radius = float(size * self.METER_TO_PIXEL)
+        print(f"Circle radius: {self.circle_radius}")
         
         # Load map and set positions
-        map_data = self.map_manager.load_map(map_name)
         self.obstacles = map_data["obstacles"]
-        self.circle_pos = np.array(start_position if start_position else map_data["start"], dtype=float)
-        self.goal_pos = np.array(goal_position if goal_position else map_data["goal"])
-        self.goal_radius = int(DEFAULT_GOAL_RADIUS_METERS * METER_TO_PIXEL)
+        self.start_pos = np.array(start_position if start_position else map_data["start"], dtype=float)
+        self.goal_pos = np.array(goal_position if goal_position else map_data["goal"], dtype=float)
+        self.goal_radius = int(DEFAULT_GOAL_RADIUS_METERS * self.METER_TO_PIXEL)
+        self.circle_pos = self.start_pos
         
         # Data recording for plotting
         self.time_points = []
@@ -58,6 +65,14 @@ class Simulator:
         self.actual_velocities_w = []
         self.time = 0.0
         
+        # Collision flag
+        self.collision_occurred = False
+
+        # Plotting flags
+        self.plot_velocities_graph = plot_velocities_graph
+        self.plot_energies_graph = plot_energies_graph
+        self.plot_lidar_map_graph = plot_lidar_map_graph
+
         # Simulation clock
         self.clock = pygame.time.Clock()
         self.dt = 1 / DEFAULT_FPS
@@ -67,6 +82,199 @@ class Simulator:
         if not self.use_lidar:
             return None
         return self.latest_point_cloud
+
+    def run(self, control_function):
+        # Initialize energy history
+        self.energy_history = {
+            'time': [],
+            'translational': [],
+            'rotational': [],
+            'elastic': [],
+            'dissipated': [],
+            'total': []
+        }
+        
+        # Initialize target velocities
+        target_vx, target_vy, target_w = 0.0,0.0,0.0
+
+        # Track robot position history
+        self.position_history = []
+        
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+            
+            # Reset collision flag
+            self.collision_occurred = False
+
+            target_velocity = np.array([target_vx, target_vy]) * self.METER_TO_PIXEL
+            velocity, angular_velocity, orientation = self.physics.update(
+                target_velocity, target_w, self.dt)
+            
+            self.velocity = velocity
+            self.angular_velocity = angular_velocity
+            self.orientation = orientation
+            # Update position
+            self.circle_pos += velocity * self.dt
+            
+            # Handle collisions
+            for obstacle in self.obstacles:
+                position_correction, collision_occurred = self.physics.handle_collision(
+                    self.circle_pos, self.circle_radius, obstacle)
+                self.circle_pos += position_correction
+                self.collision_occurred = self.collision_occurred or collision_occurred
+            
+            # Check if goal is reached
+            distance_to_goal = np.linalg.norm(self.circle_pos - self.goal_pos)
+            if distance_to_goal < (self.circle_radius + self.goal_radius):
+                running = False
+                break
+            
+            # Get LiDAR readings and point cloud
+            lidar_readings = None
+            if self.use_lidar:
+                lidar_readings = self.lidar.get_readings(
+                    self.circle_pos,
+                    orientation,
+                    self.obstacles
+                )
+                lidar_readings *= self.METER_TO_PIXEL  # Convert to pixels for rendering
+                self.latest_point_cloud = self.lidar.get_point_cloud()  # Store latest point cloud
+                
+                # Store point cloud periodically to prevent memory issues
+                self.point_cloud_counter += 1
+                if self.point_cloud_counter >= self.point_cloud_sample_rate:
+                    self.all_point_clouds.append(self.latest_point_cloud)  # Store point cloud
+                    self.point_cloud_counter = 0
+            
+            # Render complete scene
+            self.renderer.render_scene(
+                self.circle_pos, 
+                self.circle_radius,
+                self.goal_pos, 
+                self.goal_radius,
+                self.obstacles, 
+                orientation,
+                self.use_lidar,
+                lidar_readings
+            )
+            
+            pygame.display.flip()
+            self.clock.tick(DEFAULT_FPS)
+            
+            # Record data
+            self.time_points.append(self.time)
+            self.target_velocities_x.append(target_vx)
+            self.target_velocities_y.append(target_vy)
+            self.target_velocities_w.append(target_w)
+            self.actual_velocities_x.append(velocity[0] / self.METER_TO_PIXEL)
+            self.actual_velocities_y.append(velocity[1] / self.METER_TO_PIXEL)
+            self.actual_velocities_w.append(angular_velocity)
+            self.time += self.dt
+            
+            # Record robot position for path tracking
+            self.position_history.append(np.copy(self.circle_pos))
+            
+            # Track energies
+            energies = self.physics.calculate_energies()
+            self.energy_history['time'].append(self.time)
+            self.energy_history['translational'].append(energies['translational'])
+            self.energy_history['rotational'].append(energies['rotational'])
+            self.energy_history['elastic'].append(energies['elastic'])
+            self.energy_history['dissipated'].append(energies['dissipated'])
+            total_energy = (energies['total_kinetic'] + 
+                          energies['elastic'] - 
+                          energies['dissipated'])
+            self.energy_history['total'].append(total_energy)
+
+            # Get target velocities from control function
+            target_vx, target_vy, target_w = control_function()
+        
+        # After simulation ends, plot the velocities
+        if self.plot_velocities_graph:
+            self.plot_velocities()
+        if self.plot_energies_graph:
+            self.plot_energies()
+        if self.plot_lidar_map_graph:
+            self.plot_lidar_obstacle_map()
+        pygame.quit()
+
+    def plot_velocities(self):
+        """Plot the recorded velocity data."""
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
+        
+        # Plot X velocities
+        ax1.plot(self.time_points, self.target_velocities_x, 'b--', label='Target Vx')
+        ax1.plot(self.time_points, self.actual_velocities_x, 'b-', label='Actual Vx')
+        ax1.set_ylabel('X Velocity (m/s)')
+        ax1.set_xlabel('Time (s)')
+        ax1.legend()
+        ax1.grid(True)
+        
+        # Plot Y velocities
+        ax2.plot(self.time_points, self.target_velocities_y, 'r--', label='Target Vy')
+        ax2.plot(self.time_points, self.actual_velocities_y, 'r-', label='Actual Vy')
+        ax2.set_ylabel('Y Velocity (m/s)')
+        ax2.set_xlabel('Time (s)')
+        ax2.legend()
+        ax2.grid(True)
+        
+        # Plot angular velocities
+        ax3.plot(self.time_points, self.target_velocities_w, 'g--', label='Target ω')
+        ax3.plot(self.time_points, self.actual_velocities_w, 'g-', label='Actual ω')
+        ax3.set_xlabel('Time (s)')
+        ax3.set_ylabel('Angular Velocity (rad/s)')
+        ax3.legend()
+        ax3.grid(True)
+        
+        plt.tight_layout()
+
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f'velocity_plot_{timestamp}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        
+        plt.show()
+
+    def plot_energies(self):
+        # Calculate cumulative energy consumption over time
+        time_points = self.energy_history['time']
+        translational_cumulative = np.cumsum(self.energy_history['translational'])
+        total_cumulative = np.cumsum(self.energy_history['total'])
+        dissipated_cumulative = np.cumsum(self.energy_history['dissipated'])
+
+        # Create single plot
+        plt.figure(figsize=(10, 6))
+        
+        # Plot cumulative energy consumption for each type
+        plt.plot(time_points, translational_cumulative, '--', label='Translational KE')
+        plt.plot(time_points, total_cumulative, '-', label='Total Energy')
+        plt.plot(time_points, dissipated_cumulative, '--', label='Dissipated Energy')
+
+        # Mark collision points
+        if hasattr(self, 'collision_times'):
+            for collision_time in self.collision_times:
+                plt.axvline(x=collision_time, color='r', linestyle=':', alpha=0.5)
+                plt.text(collision_time, plt.ylim()[1], 'Collision', rotation=90, 
+                        verticalalignment='top')
+
+        plt.xlabel('Time (s)')
+        plt.ylabel('Cumulative Energy (J)')
+        plt.title('Total Energy Consumption Over Time')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f'energy_consumption_plot_{timestamp}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        
+        plt.show()
+
 
     def plot_lidar_obstacle_map(self):
         """Plot all obstacles detected by the LiDAR sensor throughout the simulation and save as PNG."""
@@ -101,8 +309,8 @@ class Simulator:
         
         # Plot the robot's path
         # Convert pixels to meters
-        robot_path_x = [pos[0]/50.0 for pos in self.position_history] if hasattr(self, 'position_history') else []
-        robot_path_y = [pos[1]/50.0 for pos in self.position_history] if hasattr(self, 'position_history') else []
+        robot_path_x = [pos[0]/self.METER_TO_PIXEL for pos in self.position_history] if hasattr(self, 'position_history') else []
+        robot_path_y = [pos[1]/self.METER_TO_PIXEL for pos in self.position_history] if hasattr(self, 'position_history') else []
         
         # If we have position history, plot the robot's path
         if robot_path_x and robot_path_y:
@@ -131,6 +339,7 @@ class Simulator:
         plt.axis('equal')
         plt.legend(loc='upper right')
         
+        
         # Calculate and display some statistics
         if x_coords and y_coords:
             total_points = len(x_coords)
@@ -146,169 +355,6 @@ class Simulator:
         print(f"LiDAR obstacle map saved as '{filename}'")
         
         # Also show the plot
-        plt.show()
-
-    def run(self, control_function):
-        # Initialize energy history
-        self.energy_history = {
-            'time': [],
-            'translational': [],
-            'rotational': [],
-            'elastic': [],
-            'dissipated': [],
-            'total': []
-        }
-        
-        # Track robot position history
-        self.position_history = []
-        
-        running = True
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-            
-            # Get target velocities and update physics
-            target_vx, target_vy, target_w = control_function()
-            target_velocity = np.array([target_vx, target_vy]) * METER_TO_PIXEL
-            velocity, angular_velocity, orientation = self.physics.update(
-                target_velocity, target_w, self.dt)
-            
-            # Update position
-            self.circle_pos += velocity * self.dt
-            
-            # Handle collisions
-            for obstacle in self.obstacles:
-                position_correction = self.physics.handle_collision(
-                    self.circle_pos, self.circle_radius, obstacle)
-                self.circle_pos += position_correction
-            
-            # Check if goal is reached
-            distance_to_goal = np.linalg.norm(self.circle_pos - self.goal_pos)
-            if distance_to_goal < (self.circle_radius + self.goal_radius):
-                running = False
-                break
-            
-            # Get LiDAR readings and point cloud
-            lidar_readings = None
-            if self.use_lidar:
-                lidar_readings = self.lidar.get_readings(
-                    self.circle_pos,
-                    orientation,
-                    self.obstacles
-                )
-                lidar_readings *= METER_TO_PIXEL  # Convert to pixels for rendering
-                self.latest_point_cloud = self.lidar.get_point_cloud()  # Store latest point cloud
-                
-                # Store point cloud periodically to prevent memory issues
-                self.point_cloud_counter += 1
-                if self.point_cloud_counter >= self.point_cloud_sample_rate:
-                    self.all_point_clouds.append(self.latest_point_cloud)  # Store point cloud
-                    self.point_cloud_counter = 0
-            
-            # Render complete scene
-            self.renderer.render_scene(
-                self.circle_pos, 
-                self.circle_radius,
-                self.goal_pos, 
-                self.goal_radius,
-                self.obstacles, 
-                orientation,
-                self.use_lidar,
-                lidar_readings
-            )
-            
-            pygame.display.flip()
-            self.clock.tick(DEFAULT_FPS)
-            
-            # Record data
-            self.time_points.append(self.time)
-            self.target_velocities_x.append(target_vx)
-            self.target_velocities_y.append(target_vy)
-            self.target_velocities_w.append(target_w)
-            self.actual_velocities_x.append(velocity[0] / METER_TO_PIXEL)
-            self.actual_velocities_y.append(velocity[1] / METER_TO_PIXEL)
-            self.actual_velocities_w.append(angular_velocity)
-            self.time += self.dt
-            
-            # Record robot position for path tracking
-            self.position_history.append(np.copy(self.circle_pos))
-            
-            # Track energies
-            energies = self.physics.calculate_energies()
-            self.energy_history['time'].append(self.time)
-            self.energy_history['translational'].append(energies['translational'])
-            self.energy_history['rotational'].append(energies['rotational'])
-            self.energy_history['elastic'].append(energies['elastic'])
-            self.energy_history['dissipated'].append(energies['dissipated'])
-            total_energy = (energies['total_kinetic'] + 
-                          energies['elastic'] - 
-                          energies['dissipated'])
-            self.energy_history['total'].append(total_energy)
-        
-        # After simulation ends, plot the velocities
-        self.plot_velocities()
-        self.plot_energies()
-        self.plot_lidar_obstacle_map()
-        pygame.quit()
-
-    def plot_velocities(self):
-        """Plot the recorded velocity data."""
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
-        
-        # Plot X velocities
-        ax1.plot(self.time_points, self.target_velocities_x, 'b--', label='Target Vx')
-        ax1.plot(self.time_points, self.actual_velocities_x, 'b-', label='Actual Vx')
-        ax1.set_ylabel('X Velocity (m/s)')
-        ax1.set_xlabel('Time (s)')
-        ax1.legend()
-        ax1.grid(True)
-        
-        # Plot Y velocities
-        ax2.plot(self.time_points, self.target_velocities_y, 'r--', label='Target Vy')
-        ax2.plot(self.time_points, self.actual_velocities_y, 'r-', label='Actual Vy')
-        ax2.set_ylabel('Y Velocity (m/s)')
-        ax2.set_xlabel('Time (s)')
-        ax2.legend()
-        ax2.grid(True)
-        
-        # Plot angular velocities
-        ax3.plot(self.time_points, self.target_velocities_w, 'g--', label='Target ω')
-        ax3.plot(self.time_points, self.actual_velocities_w, 'g-', label='Actual ω')
-        ax3.set_xlabel('Time (s)')
-        ax3.set_ylabel('Angular Velocity (rad/s)')
-        ax3.legend()
-        ax3.grid(True)
-        
-        plt.tight_layout()
-        plt.show()
-
-    def plot_energies(self):
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
-        
-        # Plot kinetic and potential energies
-        ax1.plot(self.energy_history['time'], self.energy_history['translational'], 
-                label='Translational KE')
-        ax1.plot(self.energy_history['time'], self.energy_history['rotational'], 
-                label='Rotational KE')
-        ax1.plot(self.energy_history['time'], self.energy_history['elastic'], 
-                label='Elastic PE')
-        ax1.set_xlabel('Time (s)')
-        ax1.set_ylabel('Energy Components (J)')
-        ax1.legend()
-        ax1.grid(True)
-        
-        # Plot total and dissipated energy
-        ax2.plot(self.energy_history['time'], self.energy_history['total'], 
-                label='Total Energy')
-        ax2.plot(self.energy_history['time'], self.energy_history['dissipated'], 
-                label='Dissipated Energy')
-        ax2.set_xlabel('Time (s)')
-        ax2.set_ylabel('Energy (J)')
-        ax2.legend()
-        ax2.grid(True)
-        
-        plt.tight_layout()
         plt.show()
 
     def visualize_lidar_rays(self, output_filename=None):

@@ -1,7 +1,7 @@
 import numpy as np
 
 class PhysicsEngine:
-    def __init__(self, mass, friction_coeff, restitution, size):
+    def __init__(self, mass, friction_coeff, restitution, size, max_acceleration, meter_to_pixel):
         self.mass = mass
         self.friction_coeff = friction_coeff
         self.restitution = restitution
@@ -14,7 +14,7 @@ class PhysicsEngine:
         self.orientation = 0.0  # Robot's facing direction in radians
         
         # Linear motion limits
-        self.max_acceleration = 2 * 50  # 2 m/s² * METER_TO_PIXEL
+        self.max_acceleration = max_acceleration * meter_to_pixel  # 5 m/s² * METER_TO_PIXEL
         
         # Angular motion limits (matching Sample2.py)
         self.max_angular_acceleration = np.radians(90)  # 90 degrees/s²
@@ -80,8 +80,10 @@ class PhysicsEngine:
         
         collision_vector = position - np.array([closest_x, closest_y])
         distance = np.linalg.norm(collision_vector)
+        collision_occurred = False
         
         if distance < radius:
+            collision_occurred = True
             # Calculate pre-collision velocity
             v_before = self.momentum / self.mass
             v_before_normal = np.dot(v_before, collision_vector/distance)
@@ -101,9 +103,10 @@ class PhysicsEngine:
             self.dissipated_energy = 0.5 * self.mass * (v_before_normal**2 - v_after_normal**2)
             
             overlap = radius - distance
-            return collision_normal * overlap
+            return collision_normal * overlap, collision_occurred
             
-        return np.array([0.0, 0.0])
+        else:
+            return np.array([0.0, 0.0]), collision_occurred
 
     def calculate_energies(self):
         # Translational Kinetic Energy: T_T = (1/2)mv²

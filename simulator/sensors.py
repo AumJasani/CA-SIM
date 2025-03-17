@@ -3,7 +3,7 @@ import pygame
 
 class Lidar2D:
     def __init__(self, range_max=20, angle_range=2*np.pi, 
-                 resolution=1.0, noise_std=0.1):  # resolution in degrees
+                 resolution=1.0, noise_std=0.1, meter_to_pixel=50.0):  # resolution in degrees
         """
         Initialize 2D LiDAR sensor.
         
@@ -17,6 +17,7 @@ class Lidar2D:
         self.angle_range = angle_range
         self.resolution = np.deg2rad(resolution)  # Convert to radians
         self.noise_std = noise_std
+        self.meter_to_pixel = meter_to_pixel
         
         # Calculate number of beams based on resolution
         self.num_beams = int(self.angle_range / self.resolution)
@@ -33,7 +34,7 @@ class Lidar2D:
             obstacles: List of pygame.Rect obstacles
         """
         readings = np.full(self.num_beams, self.range_max)
-        robot_pos = robot_pos / 50.0  # Convert to meters
+        robot_pos = robot_pos / self.meter_to_pixel  # Convert to meters
         self.point_cloud = []  # Clear previous point cloud
         
         for i, angle in enumerate(self.angles):
@@ -53,10 +54,10 @@ class Lidar2D:
             # Check intersection with each obstacle
             for obstacle in obstacles:
                 # Convert obstacle coordinates to meters
-                obstacle_left = obstacle.left / 50.0
-                obstacle_right = obstacle.right / 50.0
-                obstacle_top = obstacle.top / 50.0
-                obstacle_bottom = obstacle.bottom / 50.0
+                obstacle_left = obstacle.left / self.meter_to_pixel
+                obstacle_right = obstacle.right / self.meter_to_pixel
+                obstacle_top = obstacle.top / self.meter_to_pixel
+                obstacle_bottom = obstacle.bottom / self.meter_to_pixel
                 
                 # Create line segments for obstacle edges
                 segments = [
@@ -143,7 +144,7 @@ class Lidar2D:
         plt.figure(figsize=(12, 10))
         
         # Convert robot position to meters
-        robot_pos_meters = robot_pos / 50.0
+        robot_pos_meters = robot_pos / self.meter_to_pixel
         
         # Plot the robot
         robot_circle = plt.Circle(
@@ -157,10 +158,10 @@ class Lidar2D:
         # Plot the obstacles
         for obstacle in obstacles:
             # Convert obstacle coordinates to meters
-            left = obstacle.left / 50.0
-            right = obstacle.right / 50.0
-            top = obstacle.top / 50.0
-            bottom = obstacle.bottom / 50.0
+            left = obstacle.left / self.meter_to_pixel
+            right = obstacle.right / self.meter_to_pixel
+            top = obstacle.top / self.meter_to_pixel
+            bottom = obstacle.bottom / self.meter_to_pixel
             
             # Create and add rectangle
             rect = patches.Rectangle(
@@ -195,10 +196,10 @@ class Lidar2D:
             # Check intersection with each obstacle
             for obstacle in obstacles:
                 # Convert obstacle coordinates to meters
-                obstacle_left = obstacle.left / 50.0
-                obstacle_right = obstacle.right / 50.0
-                obstacle_top = obstacle.top / 50.0
-                obstacle_bottom = obstacle.bottom / 50.0
+                obstacle_left = obstacle.left / self.meter_to_pixel
+                obstacle_right = obstacle.right / self.meter_to_pixel
+                obstacle_top = obstacle.top / self.meter_to_pixel
+                obstacle_bottom = obstacle.bottom / self.meter_to_pixel
                 
                 # Create line segments for obstacle edges
                 segments = [
