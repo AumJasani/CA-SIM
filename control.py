@@ -12,7 +12,8 @@ robot_radius = 0.3
 
 # Create simulator instance
 sim = Simulator(map_name="default", size=robot_radius, max_velocity=3, mass=8,
-                 use_lidar=True, lidar_resolution=5.0, lidar_range_max=8.0, plot_energies_graph=True)
+                 use_lidar=True, lidar_resolution=5.0, lidar_range_max=8.0,
+                 plot_energies_graph=True, plot_velocities_graph=True)
 
 # Define start and goal points (in meters)
 start_point = sim.start_pos // sim.METER_TO_PIXEL
@@ -298,13 +299,6 @@ def plot_waypoints_and_path():
             
             # Plot obstacles as small black dots with increased size and opacity
             plt.plot(obstacles_x, obstacles_y, "k.", markersize=1, alpha=0.7, label='Obstacles')
-            
-            # Add robot radius to visualize collision areas (only for unique points)
-            ax = plt.gca()
-            for x, y in unique_points:
-                circle = Circle((x, y), drr.robot_radius, fill=False, 
-                               edgecolor='darkgray', alpha=0.2, linewidth=0.5)
-                ax.add_patch(circle)
     except Exception as e:
         print(f"Error plotting obstacles: {e}")
     
